@@ -1,3 +1,8 @@
+# We are building with clang for faster/lower memory LTO builds.
+# See https://docs.fedoraproject.org/en-US/packaging-guidelines/#_compiler_macros
+%global toolchain clang
+%global _lto_cflags %{nil}
+
 # Components enabled if supported by target architecture:
 %define gold_arches %{ix86} x86_64 %{arm} aarch64 %{power64} s390x
 %ifarch %{gold_arches}
@@ -7,14 +12,17 @@
 %endif
 
 %bcond_without compat_build
+%bcond_without check
 
 %global llvm_libdir %{_libdir}/%{name}
 %global build_llvm_libdir %{buildroot}%{llvm_libdir}
-%global rc_ver 1
+#global rc_ver 1
 %global maj_ver 13
 %global min_ver 0
-%global patch_ver 0
-%global abi_revision 0
+%global patch_ver 1
+%if !%{maj_ver} && 0%{?rc_ver}
+%global abi_revision 2
+%endif
 %global llvm_srcdir llvm-%{maj_ver}.%{min_ver}.%{patch_ver}%{?rc_ver:rc%{rc_ver}}.src
 
 %if %{with compat_build}
@@ -51,9 +59,17 @@
 %global _dwz_low_mem_die_limit_s390x 1
 %global _dwz_max_die_limit_s390x 1000000
 
+%ifarch %{arm}
+# koji overrides the _gnu variable to be gnu, which is not correct for clang, so
+# we need to hard-code the correct triple here.
+%global llvm_triple armv7l-redhat-linux-gnueabihf
+%else
+%global llvm_triple %{_host}
+%endif
+
 Name:		%{pkg_name}
 Version:	%{maj_ver}.%{min_ver}.%{patch_ver}%{?rc_ver:~rc%{rc_ver}}
-Release:	2%{?dist}
+Release:	1%{?dist}
 Summary:	The Low Level Virtual Machine
 
 License:	NCSA
@@ -67,12 +83,15 @@ Source3:	run-lit-tests
 Source4:	lit.fedora.cfg.py
 %endif
 
+%if 0%{?abi_revision}
 Patch0:		0001-cmake-Allow-shared-libraries-to-customize-the-soname.patch
-# This has been backported to release/13.x and should be in 13.0.0-rc2
-Patch1:		0001-test-Fix-tools-gold-X86-comdat-nodeduplicate.ll-on-n.patch
+%endif
+Patch1:		0001-XFAIL-missing-abstract-variable.ll-test-on-ppc64le.patch
+Patch2:		0001-Disable-CrashRecoveryTest.DumpStackCleanup-test-on-a.patch
 
 BuildRequires:	gcc
 BuildRequires:	gcc-c++
+BuildRequires:	clang
 BuildRequires:	cmake
 BuildRequires:	ninja-build
 BuildRequires:	zlib-devel
@@ -91,7 +110,7 @@ BuildRequires:	valgrind-devel
 %endif
 # LLVM's LineEditor library will use libedit if it is available.
 BuildRequires:	libedit-devel
-# We need python3-devel for pathfix.py.
+# We need python3-devel for %%py3_shebang_fix
 BuildRequires:	python3-devel
 BuildRequires:	python3-setuptools
 
@@ -184,22 +203,13 @@ LLVM's modified googletest sources.
 %{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'
 %autosetup -n %{llvm_srcdir} -p2
 
-pathfix.py -i %{__python3} -pn \
+%py3_shebang_fix \
 	test/BugPoint/compile-custom.ll.py \
 	tools/opt-viewer/*.py \
 	utils/update_cc_test_checks.py
 
 %build
 
-# Disable LTO on s390x, this causes some test failures:
-# LLVM-Unit :: Target/AArch64/./AArch64Tests/InstSizes.Authenticated
-# LLVM-Unit :: Target/AArch64/./AArch64Tests/InstSizes.PATCHPOINT
-# LLVM-Unit :: Target/AArch64/./AArch64Tests/InstSizes.STACKMAP
-# LLVM-Unit :: Target/AArch64/./AArch64Tests/InstSizes.TLSDESC_CALLSEQ
-# On X86_64, LTO builds of TableGen crash.  This can be reproduced by:
-# %%cmake_build --target include/llvm/IR/IntrinsicsAArch64.h
-# Because of these failures, lto is disabled for now.
-%global _lto_cflags %{nil}
 
 %ifarch s390 s390x %{arm} %ix86
 # Decrease debuginfo verbosity to reduce memory consumption during final library linking
@@ -207,7 +217,7 @@ pathfix.py -i %{__python3} -pn \
 %endif
 
 # force off shared libs as cmake macros turns it on.
-%cmake  -G Ninja \
+%cmake	-G Ninja \
 	-DBUILD_SHARED_LIBS:BOOL=OFF \
 	-DLLVM_PARALLEL_LINK_JOBS=1 \
 	-DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -242,7 +252,7 @@ pathfix.py -i %{__python3} -pn \
 	\
 	-DLLVM_INCLUDE_TESTS:BOOL=ON \
 	-DLLVM_BUILD_TESTS:BOOL=ON \
-    -DLLVM_LIT_EXTRA_ARGS=-v \
+	-DLLVM_LIT_EXTRA_ARGS=-v \
 	\
 	-DLLVM_INCLUDE_EXAMPLES:BOOL=ON \
 	-DLLVM_BUILD_EXAMPLES:BOOL=OFF \
@@ -261,17 +271,21 @@ pathfix.py -i %{__python3} -pn \
 	-DLLVM_ENABLE_SPHINX:BOOL=ON \
 	-DLLVM_ENABLE_DOXYGEN:BOOL=OFF \
 	\
+%if %{without compat_build}
 	-DLLVM_VERSION_SUFFIX='' \
+%endif
 	-DLLVM_BUILD_LLVM_DYLIB:BOOL=ON \
 	-DLLVM_LINK_LLVM_DYLIB:BOOL=ON \
 	-DLLVM_BUILD_EXTERNAL_COMPILER_RT:BOOL=ON \
 	-DLLVM_INSTALL_TOOLCHAIN_ONLY:BOOL=OFF \
-	-DLLVM_ABI_REVISION=%{abi_revision} \
+	%{?abi_revision:-DLLVM_ABI_REVISION=%{abi_revision}} \
 	\
+	-DLLVM_DEFAULT_TARGET_TRIPLE=%{llvm_triple} \
 	-DSPHINX_WARNINGS_AS_ERRORS=OFF \
 	-DCMAKE_INSTALL_PREFIX=%{install_prefix} \
 	-DLLVM_INSTALL_SPHINX_HTML_DIR=%{_pkgdocdir}/html \
-	-DSPHINX_EXECUTABLE=%{_bindir}/sphinx-build-3
+	-DSPHINX_EXECUTABLE=%{_bindir}/sphinx-build-3 \
+	-DLLVM_INCLUDE_BENCHMARKS=OFF
 
 # Build libLLVM.so first.  This ensures that when libLLVM.so is linking, there
 # are no other compile jobs running.  This will help reduce OOM errors on the
@@ -328,7 +342,7 @@ cp -R utils/UpdateTestChecks %{install_srcdir}/utils/
 %if %{with gold}
 # Add symlink to lto plugin in the binutils plugin directory.
 %{__mkdir_p} %{buildroot}%{_libdir}/bfd-plugins/
-ln -s %{_libdir}/LLVMgold.so %{buildroot}%{_libdir}/bfd-plugins/
+ln -s -t %{buildroot}%{_libdir}/bfd-plugins/ ../LLVMgold.so
 %endif
 
 %else
@@ -406,8 +420,10 @@ rm test/tools/llvm-readobj/ELF/dependent-libraries.test
 # non reproducible errors
 rm test/tools/dsymutil/X86/swift-interface.test
 
+%if %{with check}
 # FIXME: use %%cmake_build instead of %%__ninja
 LD_LIBRARY_PATH=%{buildroot}/%{pkg_libdir}  %{__ninja} check-all -C %{_vpath_builddir}
+%endif
 
 %endif
 
@@ -459,6 +475,7 @@ fi
 %{_libdir}/bfd-plugins/LLVMgold.so
 %endif
 %{_libdir}/libLLVM-%{maj_ver}.%{min_ver}*.so
+%{_libdir}/libLLVM-%{maj_ver}.so%{?abi_revision:.%{abi_revision}}
 %{_libdir}/libLTO.so*
 %else
 %config(noreplace) %{_sysconfdir}/ld.so.conf.d/%{name}-%{_arch}.conf
@@ -467,7 +484,6 @@ fi
 %endif
 %{pkg_libdir}/libLLVM-%{maj_ver}.%{min_ver}*.so
 %{pkg_libdir}/libLTO.so*
-%{pkg_libdir}/libLLVM-%{maj_ver}.so.%{abi_revision}
 %exclude %{pkg_libdir}/libLTO.so
 %endif
 %{pkg_libdir}/libRemarks.so*
@@ -528,8 +544,59 @@ fi
 %endif
 
 %changelog
-* Thu Jan 20 2022 Fedora Release Engineering <releng@fedoraproject.org> - 13.0.0~rc1-2
+* Wed Feb 02 2022 Nikita Popov <npopov@redhat.com> - 13.0.1-1
+- Update to LLVM 13.0.1 final
+
+* Tue Jan 25 2022 Nikita Popov <npopov@redhat.com> - 13.0.1~rc3-1
+- Update to LLVM 13.0.1rc3
+
+* Thu Jan 20 2022 Fedora Release Engineering <releng@fedoraproject.org> - 13.0.1~rc2-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_36_Mass_Rebuild
+
+* Thu Jan 13 2022 Nikita Popov <npopov@redhat.com> - 13.0.1~rc2-1
+- Update to LLVM 13.0.1rc2
+
+* Mon Jan 10 2022 Nikita Popov <npopov@redhat.com> - 13.0.1~rc1-1
+- Upstream 13.0.1 rc1 release
+
+* Sat Jan 08 2022 Miro Hrončok <mhroncok@redhat.com> - 13.0.0-8
+- Rebuilt for https://fedoraproject.org/wiki/Changes/LIBFFI34
+
+* Thu Nov 11 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0-7
+- Enable lto on s390x and arm
+
+* Mon Oct 25 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0-6
+- Build with Thin LTO
+
+* Mon Oct 18 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0-5
+- Build with clang
+
+* Fri Oct 08 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0-4
+- Fix default triple on arm
+
+* Wed Oct 06 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0-3
+- Set default triple
+
+* Mon Oct 04 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0-2
+- Drop abi_revision from soname
+
+* Thu Sep 30 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0-1
+- 13.0.0 Release
+
+* Thu Sep 30 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0~rc4-2
+- Restore config.guess for host triple detection
+
+* Fri Sep 24 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0~rc4-1
+- 13.0.0-rc4 Release
+
+* Fri Sep 17 2021 Tom Stellard <tstellar@redhta.com> - 13.0.0~rc3-1
+- 13.0.0-rc3 Release
+
+* Mon Sep 13 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0~rc1-3
+- Pass LLVM_DEFAULT_TARGET_TRIPLE to cmake
+
+* Mon Sep 13 2021 Konrad Kleine <kkleine@redhat.com> - 13.0.0~rc1-2
+- Add --without=check option
 
 * Wed Aug 04 2021 Tom Stellard <tstellar@redhat.com> - 13.0.0~rc1-1
 - 13.0.0-rc1 Release
