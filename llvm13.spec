@@ -1,6 +1,6 @@
 # We are building with clang for faster/lower memory LTO builds.
 # See https://docs.fedoraproject.org/en-US/packaging-guidelines/#_compiler_macros
-%global toolchain clang
+%global toolchain gcc
 %global _lto_cflags %{nil}
 
 # Components enabled if supported by target architecture:
@@ -69,7 +69,7 @@
 
 Name:		%{pkg_name}
 Version:	%{maj_ver}.%{min_ver}.%{patch_ver}%{?rc_ver:~rc%{rc_ver}}
-Release:	2%{?dist}
+Release:	2.rv64%{?dist}
 Summary:	The Low Level Virtual Machine
 
 License:	NCSA
@@ -211,7 +211,7 @@ LLVM's modified googletest sources.
 %build
 
 
-%ifarch s390 s390x %{arm} %ix86
+%ifarch s390 s390x %{arm} %ix86 riscv64
 # Decrease debuginfo verbosity to reduce memory consumption during final library linking
 %global optflags %(echo %{optflags} | sed 's/-g /-g1 /')
 %endif
@@ -222,7 +222,7 @@ LLVM's modified googletest sources.
 	-DLLVM_PARALLEL_LINK_JOBS=1 \
 	-DCMAKE_BUILD_TYPE=RelWithDebInfo \
 	-DCMAKE_SKIP_RPATH:BOOL=ON \
-%ifarch s390 %{arm} %ix86
+%ifarch s390 %{arm} %ix86 riscv64
 	-DCMAKE_C_FLAGS_RELWITHDEBINFO="%{optflags} -DNDEBUG" \
 	-DCMAKE_CXX_FLAGS_RELWITHDEBINFO="%{optflags} -DNDEBUG" \
 %endif
@@ -410,10 +410,10 @@ touch %{buildroot}%{_bindir}/llvm-config%{exec_suffix}
 %check
 # Disable check section on arm due to some kind of memory related failure.
 # Possibly related to https://bugzilla.redhat.com/show_bug.cgi?id=1920183
-%ifnarch %{arm}
+%ifnarch %{arm} riscv64
 
 # TODO: Fix the failures below
-%ifarch %{arm}
+%ifarch %{arm} riscv64
 rm test/tools/llvm-readobj/ELF/dependent-libraries.test
 %endif
 
@@ -544,6 +544,9 @@ fi
 %endif
 
 %changelog
+* Wed Jan 04 2023 Liu Yang <Yang.Liu.sn@gmail.com> - 13.0.1-2.rv64
+- Add riscv64 support.
+
 * Thu Jul 21 2022 Fedora Release Engineering <releng@fedoraproject.org> - 13.0.1-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_37_Mass_Rebuild
 
